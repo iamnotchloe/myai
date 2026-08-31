@@ -1,5 +1,5 @@
 {
-  "dataset": "evaluation/dev_set_v2.jsonl",
+  "dataset": "evaluation/datasets/dev_set_v2.jsonl",
   "answerable_queries": 67,
   "tokenizer": "char-bigram",
   "rrf_k": 5,

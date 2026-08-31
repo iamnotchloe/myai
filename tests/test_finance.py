@@ -4,18 +4,16 @@ from __future__ import annotations
 import unittest
 import json
 from decimal import Decimal
-from pathlib import Path
+from pypdf import PdfReader
 
-from structured_finance import StructuredFinanceEngine
-
-
-ROOT = Path(__file__).resolve().parents[1]
+from myai_rag.config import DOCUMENTS_DIR, STRUCTURED_FINANCE_PATH
+from myai_rag.finance import StructuredFinanceEngine
 
 
 class StructuredFinanceEngineTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
-        cls.engine = StructuredFinanceEngine(ROOT / "structured_financial_data.json")
+        cls.engine = StructuredFinanceEngine(STRUCTURED_FINANCE_PATH)
 
     def test_single_company_multiple_metrics(self) -> None:
         result = self.engine.answer(
@@ -98,19 +96,7 @@ class StructuredFinanceEngineTest(unittest.TestCase):
         self.assertIsNone(result)
 
     def test_structured_data_values_and_sources_are_valid(self) -> None:
-        payload = json.loads(
-            (ROOT / "structured_financial_data.json").read_text(encoding="utf-8")
-        )
-        metadata = json.loads(
-            (ROOT / "faiss_index" / "documents_metadata.json").read_text(encoding="utf-8")
-        )
-        indexed_pages = {
-            (
-                item["metadata"]["source_file"],
-                int(item["metadata"].get("page_label", item["metadata"]["page"] + 1)),
-            )
-            for item in metadata
-        }
+        payload = json.loads(STRUCTURED_FINANCE_PATH.read_text(encoding="utf-8"))
         required_metrics = {
             "revenue", "net_profit", "total_assets", "total_liabilities",
             "equity", "cash_flow", "debt_ratio", "asset_liability_ratio", "roe",
@@ -118,9 +104,11 @@ class StructuredFinanceEngineTest(unittest.TestCase):
         for company, company_data in payload["companies"].items():
             with self.subTest(company=company):
                 self.assertEqual(required_metrics, set(company_data["metrics"]))
-                self.assertIn(
-                    (company_data["source_file"], int(company_data["page_number"])),
-                    indexed_pages,
+                source_path = DOCUMENTS_DIR / company_data["source_file"]
+                self.assertTrue(source_path.exists())
+                self.assertLessEqual(
+                    int(company_data["page_number"]),
+                    len(PdfReader(str(source_path)).pages),
                 )
                 for metric in company_data["metrics"].values():
                     self.assertGreaterEqual(Decimal(metric["value"]), Decimal("0"))

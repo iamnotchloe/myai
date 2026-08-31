@@ -1,4 +1,4 @@
-# streamlit_app.py
+"""Streamlit user interface for the MyAI RAG API."""
 
 import json
 import os
@@ -182,5 +182,3 @@ if prompt := st.chat_input("请输入您关于金融服务的问题..."):
             st.session_state.messages.append(
                 {"role": "assistant", "content": f"网络错误: {e}"}
             )
-
-# streamlit run .\streamlit_app.py

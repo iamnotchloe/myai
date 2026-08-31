@@ -1,5 +1,5 @@
 {
-  "dataset": "/Users/chloeewu/Desktop/华为实习/myai/evaluation/golden_test_set.jsonl",
+  "dataset": "evaluation/datasets/golden_test_set.jsonl",
   "answerable_queries": 27,
   "tokenizer": "char-bigram",
   "rrf_k": 60,

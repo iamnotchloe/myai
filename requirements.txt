@@ -9,7 +9,6 @@ faiss-cpu>=1.10,<2
 langchain-core>=0.3,<2
 langchain-community>=0.3,<2
 langchain-huggingface>=0.1,<2
-langchain-text-splitters>=0.3,<2
 sentence-transformers>=3.4,<6
 transformers>=4.49,<6
 pypdf>=5.3,<7

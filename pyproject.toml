@@ -1,0 +1,50 @@
+[build-system]
+requires = ["setuptools>=75", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "myai-rag"
+version = "0.2.0"
+description = "A finance-focused RAG system with adaptive chunking, hybrid retrieval, reranking, citations, and evaluation."
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+  "fastapi>=0.115,<1",
+  "uvicorn[standard]>=0.34,<1",
+  "streamlit>=1.42,<2",
+  "watchdog>=6,<7",
+  "requests>=2.32,<3",
+  "python-dotenv>=1.0,<2",
+  "torch>=2.6,<3",
+  "faiss-cpu>=1.10,<2",
+  "langchain-core>=0.3,<2",
+  "langchain-community>=0.3,<2",
+  "langchain-huggingface>=0.1,<2",
+  "sentence-transformers>=3.4,<6",
+  "transformers>=4.49,<6",
+  "pypdf>=5.3,<7",
+  "rank-bm25>=0.2.2,<1",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.3,<9", "ruff>=0.11,<1"]
+
+[project.scripts]
+myai-build-index = "myai_rag.indexing:main"
+myai-api = "myai_rag.cli:run_api"
+myai-ui = "myai_rag.cli:run_ui"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+
+[tool.ruff]
+target-version = "py310"
+line-length = 100
+exclude = ["evaluation/results"]
+
+[tool.ruff.lint]
+select = ["E9", "F63", "F7", "F82"]

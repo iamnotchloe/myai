@@ -18,11 +18,12 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
-OUT_ALL = Path(__file__).with_name("golden_dataset_v2.jsonl")
-OUT_DEV = Path(__file__).with_name("dev_set_v2.jsonl")
-OUT_TEST = Path(__file__).with_name("test_set_v2.jsonl")
-OUT_SUMMARY = Path(__file__).with_name("dataset_v2_summary.json")
-METADATA = ROOT / "faiss_index" / "documents_metadata.json"
+DATASET_DIR = Path(__file__).with_name("datasets")
+OUT_ALL = DATASET_DIR / "golden_dataset_v2.jsonl"
+OUT_DEV = DATASET_DIR / "dev_set_v2.jsonl"
+OUT_TEST = DATASET_DIR / "test_set_v2.jsonl"
+OUT_SUMMARY = DATASET_DIR / "dataset_v2_summary.json"
+METADATA = ROOT / "artifacts" / "faiss_index" / "documents_metadata.json"
 
 
 def groups(*items: str | tuple[str, ...]) -> list[list[str]]:
@@ -301,6 +302,7 @@ def write_jsonl(path: Path, cases: list[dict]) -> None:
 
 
 def main() -> None:
+    DATASET_DIR.mkdir(parents=True, exist_ok=True)
     cases = build_cases()
     validate(cases)
     write_jsonl(OUT_ALL, cases)

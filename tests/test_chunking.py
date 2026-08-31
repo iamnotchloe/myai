@@ -3,7 +3,7 @@ import unittest
 
 from langchain_core.documents import Document
 
-from adaptive_chunking import (
+from myai_rag.chunking import (
     AdaptiveChunkConfig,
     adaptive_chunk_elements,
     adaptive_split_document,
@@ -11,7 +11,7 @@ from adaptive_chunking import (
 )
 
 
-def test_token_counter(text: str) -> int:
+def count_test_tokens(text: str) -> int:
     """测试用 tokenizer：中文逐字，连续英文/数字各算一个 token。"""
     return len(re.findall(r"[\u3400-\u9fff]|[A-Za-z0-9]+|[^\w\s]", text))
 
@@ -27,12 +27,12 @@ class AdaptiveChunkingTest(unittest.TestCase):
             "公司持续优化产品结构并提升市场竞争力。"
             "2022年营业收入9200万元，净利润680万元。"
         )
-        chunks = adaptive_chunk_elements(elements, self.config, test_token_counter)
+        chunks = adaptive_chunk_elements(elements, self.config, count_test_tokens)
 
         self.assertGreater(len(chunks), 1)
         self.assertTrue(
             all(
-                test_token_counter("".join(element.text for element in chunk))
+                count_test_tokens("".join(element.text for element in chunk))
                 <= self.config.max_tokens
                 for chunk in chunks
             )
@@ -46,7 +46,7 @@ class AdaptiveChunkingTest(unittest.TestCase):
         chunks = adaptive_split_document(
             Document(page_content=text, metadata={"page": 0, "source": "demo.pdf"}),
             self.config,
-            test_token_counter,
+            count_test_tokens,
         )
 
         self.assertGreater(len(chunks), 1)
@@ -73,7 +73,7 @@ class AdaptiveChunkingTest(unittest.TestCase):
         self.assertEqual(elements[0].kind, "table")
         self.assertIn("营业收入", elements[0].text)
 
-        chunks = adaptive_chunk_elements(elements, self.config, test_token_counter)
+        chunks = adaptive_chunk_elements(elements, self.config, count_test_tokens)
         self.assertTrue(any(element.kind == "table" for element in chunks[0]))
 
 

@@ -1,8 +1,0 @@
-{
-  "recommendations": [
-    "ms-python.python",
-    "ms-python.vscode-pylance",
-    "charliermarsh.ruff",
-    "ms-ceintl.vscode-language-pack-zh-hans"
-  ]
-}

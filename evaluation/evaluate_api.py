@@ -14,7 +14,7 @@ from statistics import mean
 import requests
 
 
-DEFAULT_DATASET = Path(__file__).with_name("golden_test_set.jsonl")
+DEFAULT_DATASET = Path(__file__).with_name("datasets") / "golden_test_set.jsonl"
 REFUSAL_PATTERNS = (
     "无法回答",
     "无法获取答案",

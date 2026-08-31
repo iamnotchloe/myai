@@ -1,12 +1,14 @@
+"""Create a compact few-shot set from explicitly positive user feedback."""
+
 import json
-from pathlib import Path
+
+from .config import FEEDBACK_DB_PATH, FEW_SHOT_PATH, ensure_runtime_directories
 
 # 与后端配置一致的路径
-BASE_DIR = Path(__file__).resolve().parent
-FEEDBACK_DB_PATH = BASE_DIR / "feedback_db.json"
-FEW_SHOT_PATH = BASE_DIR / "few_shot_examples.json"
-
-def update_few_shot():
+def update_few_shot() -> None:
+    ensure_runtime_directories()
+    if not FEEDBACK_DB_PATH.exists():
+        FEEDBACK_DB_PATH.write_text("[]", encoding="utf-8")
     # 读取所有反馈
     with open(FEEDBACK_DB_PATH, "r", encoding="utf-8") as f:
         feedbacks = json.load(f)

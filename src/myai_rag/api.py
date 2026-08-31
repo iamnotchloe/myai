@@ -1,4 +1,4 @@
-# app.py
+"""FastAPI application for the finance-focused RAG pipeline."""
 import os
 from pathlib import Path
 from dataclasses import dataclass
@@ -20,17 +20,28 @@ from rank_bm25 import BM25Okapi
 from sentence_transformers import SentenceTransformer, util
 #多次请求llm
 import time
-# 先导入 filter_few_shot 中的 update_few_shot 函数（放在文件顶部导入区）
-from filter_few_shot import update_few_shot
-from structured_finance import StructuredFinanceEngine
+from .config import (
+    CACHE_DIR,
+    DOCUMENTS_DIR,
+    FEEDBACK_DB_PATH,
+    FEW_SHOT_PATH,
+    FAQ_CACHE_PATH,
+    INDEX_DIR,
+    PROJECT_ROOT,
+    STRUCTURED_FINANCE_PATH,
+    ensure_runtime_directories,
+)
+from .feedback import update_few_shot
+from .finance import StructuredFinanceEngine
 
 # --- 1. 初始化和配置 ---
 print("正在初始化 FastAPI 应用和 RAG 系统...")
 
 # 以脚本目录为基准，确保从 VS Code 或终端启动都能找到数据。
-BASE_DIR = Path(__file__).resolve().parent
+BASE_DIR = PROJECT_ROOT
 load_dotenv(BASE_DIR / ".env")
-os.environ.setdefault("HF_HOME", str(BASE_DIR / ".cache" / "huggingface"))
+os.environ.setdefault("HF_HOME", str(CACHE_DIR / "huggingface"))
+ensure_runtime_directories()
 
 # 全局配置
 if torch.cuda.is_available():
@@ -43,14 +54,13 @@ EMBEDDING_MODEL_NAME_OR_PATH = os.getenv(
     "EMBEDDING_MODEL_NAME_OR_PATH",
     "BAAI/bge-small-zh-v1.5",
 )
-FAISS_DB_PATH = BASE_DIR / "faiss_index"
-PDF_FOLDER_PATH = BASE_DIR / "金融数据集-报表"
-STRUCTURED_FINANCE_PATH = BASE_DIR / "structured_financial_data.json"
+FAISS_DB_PATH = INDEX_DIR
+PDF_FOLDER_PATH = DOCUMENTS_DIR
 SILICONFLOW_API_KEY = os.getenv("SILICONFLOW_API_KEY")
 
 # Reranker 和 LLM 模型配置
-RERANKER_MODEL = "BAAI/bge-reranker-v2-m3"
-LLM_MODEL = "deepseek-ai/DeepSeek-R1-0528-Qwen3-8B"  # 使用一个高效的指令模型
+RERANKER_MODEL = os.getenv("RERANKER_MODEL", "BAAI/bge-reranker-v2-m3")
+LLM_MODEL = os.getenv("LLM_MODEL", "deepseek-ai/DeepSeek-R1-0528-Qwen3-8B")
 SILICONFLOW_API_BASE = "https://api.siliconflow.cn/v1"
 BM25_TOP_K = int(os.getenv("BM25_TOP_K", "20"))
 DENSE_TOP_K = int(os.getenv("DENSE_TOP_K", "10"))
@@ -69,17 +79,17 @@ RERANK_TIMEOUT_SECONDS = float(os.getenv("RERANK_TIMEOUT_SECONDS", "10"))
 
 #faq配置
 faq_model = SentenceTransformer(EMBEDDING_MODEL_NAME_OR_PATH, device=DEVICE)
-FAQ_CACHE_PATH = BASE_DIR / "faq_cache" / "faq_金融服务.json"
-FAQ_CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
-faq_threshold = 0.88  # 相似度门限
+faq_threshold = float(os.getenv("FAQ_SIMILARITY_THRESHOLD", "0.88"))
 
 # 定义反馈数据的存储路径
 # 第一步：创建FastAPI应用实例（必须在装饰器前定义）
-app = FastAPI()  
+app = FastAPI(
+    title="MyAI RAG API",
+    description="面向企业金融报告的混合检索与可追溯问答服务。",
+    version="0.2.0",
+)
 
 # 第二步：定义全局配置和变量
-FEEDBACK_DB_PATH = BASE_DIR / "feedback_db.json"
-FEW_SHOT_PATH = BASE_DIR / "few_shot_examples.json"
 # 初始化反馈文件（首次运行创建空文件）
 if not os.path.exists(FEEDBACK_DB_PATH):
     with open(FEEDBACK_DB_PATH, "w", encoding="utf-8") as f:
@@ -92,7 +102,10 @@ if not SILICONFLOW_API_KEY:
 
 # 检查FAISS索引是否存在
 if not os.path.exists(FAISS_DB_PATH):
-    raise FileNotFoundError(f"错误：FAISS 索引目录 '{FAISS_DB_PATH}' 未找到。请先运行 build_index.py 来创建索引。")
+    raise FileNotFoundError(
+        f"错误：FAISS 索引目录 '{FAISS_DB_PATH}' 未找到。"
+        "请先运行 `myai-build-index` 或 `python -m myai_rag.indexing`。"
+    )
 
 # 加载嵌入模型
 print(f"正在加载嵌入模型: {EMBEDDING_MODEL_NAME_OR_PATH} 到设备: {DEVICE}")

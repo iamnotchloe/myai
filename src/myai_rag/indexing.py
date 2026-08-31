@@ -1,4 +1,4 @@
-# build_index.py
+"""Build the local FAISS and BM25 indexes from the source PDF reports."""
 
 import os
 import re
@@ -12,24 +12,30 @@ from langchain_community.document_loaders import PyPDFLoader
 from langchain_community.vectorstores import FAISS
 from langchain_huggingface import HuggingFaceEmbeddings
 from transformers import AutoTokenizer
-from adaptive_chunking import (
+from .chunking import (
     AdaptiveChunkConfig,
     adaptive_split_documents,
     approximate_token_count,
 )
-# --- 配置 ---
-# 在 Mac、Windows 或 VS Code 中都以项目目录为基准。
-BASE_DIR = Path(__file__).resolve().parent
+from .config import (
+    CACHE_DIR,
+    DOCUMENTS_DIR,
+    INDEX_DIR,
+    PROJECT_ROOT,
+    ensure_runtime_directories,
+)
+# 在 Mac、Windows 或编辑器中都以项目目录为基准。
+BASE_DIR = PROJECT_ROOT
 load_dotenv(BASE_DIR / ".env")
-os.environ.setdefault("HF_HOME", str(BASE_DIR / ".cache" / "huggingface"))
+os.environ.setdefault("HF_HOME", str(CACHE_DIR / "huggingface"))
 
 # 文件和模型路径配置
-PDF_FOLDER_PATH = BASE_DIR / "金融数据集-报表"
+PDF_FOLDER_PATH = DOCUMENTS_DIR
 EMBEDDING_MODEL_NAME_OR_PATH = os.getenv(
     "EMBEDDING_MODEL_NAME_OR_PATH",
     "BAAI/bge-small-zh-v1.5",
 )
-FAISS_DB_PATH = BASE_DIR / "faiss_index"
+FAISS_DB_PATH = INDEX_DIR
 METADATA_FILE_NAME = "documents_metadata.json"
 
 # 语雀 1.5.4：按解析元素累计 token，超过 max_tokens 时结束当前块。
@@ -154,7 +160,9 @@ def save_documents_for_bm25(chunks: list[Document], output_dir: str, file_name: 
         json.dump(doc_list, f, ensure_ascii=False, indent=4)
     print(f"BM25 文档已保存到：{file_name}")
     
-if __name__ == "__main__":
+def main() -> None:
+    """Build the local FAISS index and BM25 corpus from ``data/documents``."""
+    ensure_runtime_directories()
     if not os.path.exists(PDF_FOLDER_PATH):
         print(f"错误：文件夹未找到，请确保 '{PDF_FOLDER_PATH}' 存在。")
     else:
@@ -176,4 +184,7 @@ if __name__ == "__main__":
             print("\n索引和元数据和bm25构建完成！")
         except Exception as e:
             print(f"\n构建过程中发生错误: {e}")
-            
+
+
+if __name__ == "__main__":
+    main()

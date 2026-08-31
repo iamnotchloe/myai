@@ -25,9 +25,9 @@ from rank_bm25 import BM25Okapi
 
 
 PROJECT_DIR = Path(__file__).resolve().parents[1]
-DEFAULT_DATASET = Path(__file__).with_name("golden_test_set.jsonl")
-DEFAULT_METADATA = PROJECT_DIR / "faiss_index" / "documents_metadata.json"
-DEFAULT_INDEX = PROJECT_DIR / "faiss_index"
+DEFAULT_DATASET = Path(__file__).with_name("datasets") / "golden_test_set.jsonl"
+DEFAULT_METADATA = PROJECT_DIR / "artifacts" / "faiss_index" / "documents_metadata.json"
+DEFAULT_INDEX = PROJECT_DIR / "artifacts" / "faiss_index"
 
 
 def load_jsonl(path: Path) -> list[dict]:
