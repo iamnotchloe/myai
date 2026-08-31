@@ -3,15 +3,20 @@
 import os
 import re
 from pathlib import Path
+from typing import Callable
 import torch
 import json
 from dotenv import load_dotenv
 from langchain_core.documents import Document
 from langchain_community.document_loaders import PyPDFLoader
-from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_community.vectorstores import FAISS
 from langchain_huggingface import HuggingFaceEmbeddings
-import requests
+from transformers import AutoTokenizer
+from adaptive_chunking import (
+    AdaptiveChunkConfig,
+    adaptive_split_documents,
+    approximate_token_count,
+)
 # --- 配置 ---
 # 在 Mac、Windows 或 VS Code 中都以项目目录为基准。
 BASE_DIR = Path(__file__).resolve().parent
@@ -27,9 +32,11 @@ EMBEDDING_MODEL_NAME_OR_PATH = os.getenv(
 FAISS_DB_PATH = BASE_DIR / "faiss_index"
 METADATA_FILE_NAME = "documents_metadata.json"
 
-# 切分参数
-CHUNK_SIZE = 500
-CHUNK_OVERLAP = 80
+# 语雀 1.5.4：按解析元素累计 token，超过 max_tokens 时结束当前块。
+ADAPTIVE_CHUNK_CONFIG = AdaptiveChunkConfig(
+    max_tokens=int(os.getenv("CHUNK_MAX_TOKENS", "448")),
+    overlap_tokens=int(os.getenv("CHUNK_OVERLAP_TOKENS", "96")),
+)
 
 # 计算设备
 if torch.cuda.is_available():
@@ -52,7 +59,22 @@ def normalize_text(text: str) -> str:
     return re.sub(r"\s+", "", text).strip()
 
 
-def load_and_split_pdf(folder_path: str, company_name: str = None) -> list[Document]:
+def get_token_counter(model_name_or_path: str) -> Callable[[str], int]:
+    """加载与 Embedding 相同的 tokenizer，避免字符数与真实 token 数偏差。"""
+    try:
+        tokenizer = AutoTokenizer.from_pretrained(model_name_or_path)
+    except Exception as exc:
+        print(f"Tokenizer 加载失败，将使用保守估算: {exc}")
+        return approximate_token_count
+
+    return lambda text: len(tokenizer.encode(text, add_special_tokens=False))
+
+
+def load_and_split_pdf(
+    folder_path: str,
+    company_name: str = None,
+    count_tokens: Callable[[str], int] = approximate_token_count,
+) -> list[Document]:
     """加载 PDF 文档并进行文本切分。"""
     all_chunks = []
 
@@ -68,13 +90,11 @@ def load_and_split_pdf(folder_path: str, company_name: str = None) -> list[Docum
             documents = loader.load()
             print(f"原始文档页数: {len(documents)}")
 
-            text_splitter = RecursiveCharacterTextSplitter(
-                chunk_size=CHUNK_SIZE,
-                chunk_overlap=CHUNK_OVERLAP,
-                length_function=len,
-                add_start_index=True,
+            chunks = adaptive_split_documents(
+                documents,
+                ADAPTIVE_CHUNK_CONFIG,
+                count_tokens=count_tokens,
             )
-            chunks = text_splitter.split_documents(documents)
             unique_chunks = []
             for chunk in chunks:
                 chunk.metadata["company"] = name
@@ -85,7 +105,9 @@ def load_and_split_pdf(folder_path: str, company_name: str = None) -> list[Docum
                 seen_chunks.add(fingerprint)
                 unique_chunks.append(chunk)
             print(
-                f"文档切分完成，生成 {len(chunks)} 个文本块，"
+                "文档自适应切分完成，"
+                f"上限 {ADAPTIVE_CHUNK_CONFIG.max_tokens} tokens，"
+                f"生成 {len(chunks)} 个文本块，"
                 f"去重后保留 {len(unique_chunks)} 个。"
             )
 
@@ -138,7 +160,11 @@ if __name__ == "__main__":
     else:
         try:
             # 1. 每份 PDF 只处理一次，并使用文件名作为公司名。
-            all_chunks = load_and_split_pdf(PDF_FOLDER_PATH)
+            token_counter = get_token_counter(EMBEDDING_MODEL_NAME_OR_PATH)
+            all_chunks = load_and_split_pdf(
+                PDF_FOLDER_PATH,
+                count_tokens=token_counter,
+            )
             # 2. 初始化嵌入模型
             embeddings_model = get_embeddings_model(EMBEDDING_MODEL_NAME_OR_PATH)
             # 3. 创建并保存 FAISS 向量数据库
