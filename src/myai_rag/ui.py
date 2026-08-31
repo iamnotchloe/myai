@@ -82,7 +82,13 @@ if prompt := st.chat_input("请输入您关于金融服务的问题..."):
 
         try:
             # 准备请求数据
-            payload = {"question": prompt}
+            # 只把此前对话作为上下文发送；后端只读取其中的 user turn，
+            # 将依赖上文的追问改写为可独立执行检索的 Query。
+            history = [
+                {"role": message["role"], "content": message["content"]}
+                for message in st.session_state.messages[:-1]
+            ][-8:]
+            payload = {"question": prompt, "history": history}
             headers = {"Content-Type": "application/json"}
 
             # 发送POST请求
@@ -96,9 +102,12 @@ if prompt := st.chat_input("请输入您关于金融服务的问题..."):
                 if result.get("success"):
                     answer = result.get("answer", "抱歉，未能生成回答。")
                     sources = result.get("source_documents", [])
+                    resolved_question = result.get("resolved_question")
 
                     # 更新聊天占位符为最终答案
                     message_placeholder.markdown(answer)
+                    if resolved_question:
+                        st.caption(f"已结合上文理解为：{resolved_question}")
 
                     # 将助手的回答和引用来源存入会话状态
                     st.session_state.messages.append(

@@ -1,0 +1,6 @@
+{"id":"mt_001","history":[{"role":"user","content":"滨江消费品2021年营业收入是多少？"}],"question":"那净利润呢？","expected_query":"滨江消费品有限公司2021年净利润是多少？","expected_clarification":false}
+{"id":"mt_002","history":[{"role":"user","content":"蓝天旅游2021年净利润是多少？"}],"question":"换算成万元呢？","expected_query":"蓝天旅游有限公司2021年净利润换算成万元是多少？","expected_clarification":false}
+{"id":"mt_003","history":[{"role":"user","content":"滨江消费品2021年总负债是多少？"}],"question":"和澜赋科技相比呢？","expected_contains":["滨江消费品有限公司","澜赋科技有限公司","2021年","总负债","相比如何"],"expected_clarification":false}
+{"id":"mt_004","history":[],"question":"那它呢？","expected_query":"那它呢？","expected_clarification":true}
+{"id":"mt_005","history":[{"role":"assistant","content":"滨江消费品2021年的营业收入是100亿元。"}],"question":"那净利润呢？","expected_query":"那净利润呢？","expected_clarification":true}
+{"id":"mt_006","history":[{"role":"user","content":"滨江消费品2021年营业收入是多少？"}],"question":"澜赋科技2021年净利润是多少？","expected_query":"澜赋科技2021年净利润是多少？","expected_clarification":false}

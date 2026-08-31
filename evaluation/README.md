@@ -7,9 +7,20 @@ evaluation/
 ├── datasets/                 # Golden Set、dev/test 与摘要
 ├── results/                  # 代表性实验输出
 ├── build_golden_v2.py        # 生成并校验 V2 数据集
+├── evaluate_query_rewrite.py # 多轮追问改写与澄清离线评测
 ├── evaluate_retrieval.py     # BM25、Dense、RRF 离线评测
 └── evaluate_api.py           # API、引用、拒答、路由和延迟评测
 ```
+
+## 多轮 Query 改写评测
+
+先验证多轮 Query 补全逻辑（不调用模型 API）：
+
+```bash
+python evaluation/evaluate_query_rewrite.py
+```
+
+该评测覆盖实体、年份、意图继承，公司切换、跨公司比较、单位换算、无上下文澄清和助手答案污染。随后再评测改写 Query 的 Hit@K/MRR 提升，才能判断它是否真正改善了 RAG 检索。
 
 ## 离线检索评测
 

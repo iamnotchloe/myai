@@ -9,6 +9,7 @@ MyAI RAG 是一个面向企业金融报告的检索增强问答项目。系统�
 - 中文字符 unigram/bigram BM25 精确词检索。
 - 加权 RRF、公司过滤、页面去重与 Small-to-Big 上下文扩展。
 - BGE Reranker 云端精排，并提供本地 BM25 降级路径。
+- 多轮 RAG Query 补全：从最近的用户问题中继承公司、年份和财务意图，把追问改写为可独立检索的问题；无法确认实体时主动澄清。
 - 知识边界拒答、确定性财务数据路由、数字校验和页码引用。
 - 120 题评测集，覆盖检索、排序、引用、拒答、路由和延迟指标。
 
@@ -20,7 +21,8 @@ flowchart LR
     B --> C[BGE embeddings]
     C --> D[FAISS index]
     B --> E[Chinese BM25 corpus]
-    Q[Question] --> R[Boundary and route]
+    Q[Question + recent user turns] --> QR[Context completion and query rewriting]
+    QR --> R[Boundary and route]
     R --> F[Dense + BM25]
     D --> F
     E --> F
@@ -101,8 +103,10 @@ API 文档：<http://127.0.0.1:8001/docs>
 ```bash
 curl -X POST http://127.0.0.1:8001/rag_query \
   -H 'Content-Type: application/json' \
-  -d '{"question":"滨江消费品2021年营业收入是多少？"}'
+  -d '{"question":"那净利润呢？","history":[{"role":"user","content":"滨江消费品2021年营业收入是多少？"}]}'
 ```
+
+上述追问会先被补全为“滨江消费品有限公司2021年净利润是多少？”，再进入检索。响应中的 `resolved_question` 会返回该独立 Query；`debug=true` 时还会返回是否改写、置信度和原因。
 
 调试检索链但不调用生成模型：
 
@@ -117,6 +121,8 @@ curl -X POST http://127.0.0.1:8001/rag_query \
 ```bash
 pytest
 
+python evaluation/evaluate_query_rewrite.py
+
 python evaluation/evaluate_retrieval.py \
   --dataset evaluation/datasets/dev_set_v2.jsonl \
   --tokenizer char-bigram \
@@ -127,7 +133,7 @@ python evaluation/evaluate_api.py \
   --retrieval-only
 ```
 
-检索评测关注 Hit@K、Recall@K、Precision@K、MRR、MAP 和 NDCG；端到端评测同时检查答案、引用、拒答、路由和延迟。
+Query 改写先用独立多轮样本检查重写准确率和澄清准确率；检索评测关注 Hit@K、Recall@K、Precision@K、MRR、MAP 和 NDCG；端到端评测同时检查答案、引用、拒答、路由和延迟。
 
 ## 配置与文档
 

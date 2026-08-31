@@ -8,8 +8,8 @@ import json
 from pypdf import PdfReader
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException
-from pydantic import BaseModel
-from typing import List, Dict, Any
+from pydantic import BaseModel, Field
+from typing import List, Dict, Any, Literal
 
 # LangChain 和向量数据库相关的导入
 from langchain_community.vectorstores import FAISS
@@ -33,6 +33,7 @@ from .config import (
 )
 from .feedback import update_few_shot
 from .finance import StructuredFinanceEngine
+from .query_rewrite import rewrite_retrieval_query
 
 # --- 1. 初始化和配置 ---
 print("正在初始化 FastAPI 应用和 RAG 系统...")
@@ -373,8 +374,14 @@ def rrf_fuse(
     ]
 
 # --- 3. Pydantic 模型定义 ---
+class ConversationTurn(BaseModel):
+    role: Literal["user", "assistant"]
+    content: str
+
+
 class QueryRequest(BaseModel):
     question: str
+    history: List[ConversationTurn] = Field(default_factory=list)
     debug: bool = False
     retrieval_only: bool = False
 
@@ -401,12 +408,18 @@ class RetrievalDebug(BaseModel):
     bm25: List[RetrievalDebugItem]
     fused: List[RetrievalDebugItem]
     reranked: List[RetrievalDebugItem]
+    original_query: str | None = None
+    rewritten_query: str | None = None
+    query_rewrite_used: bool = False
+    query_rewrite_confidence: float | None = None
+    query_rewrite_reason: str | None = None
 
 class QueryResponse(BaseModel):
     success: bool
     question: str
     answer: str
     source_documents: List[SourceDocument]
+    resolved_question: str | None = None
     retrieval_debug: RetrievalDebug | None = None
 
 class HealthResponse(BaseModel):
@@ -833,11 +846,46 @@ async def rag_query(request: QueryRequest):
     """
     接收用户问题，执行 RAG+Rerank 流程，并返回LLM生成的答案。
     """
-    question = request.question
-    mentioned_companies = companies_mentioned_in(question)
-
-    if not question:
+    original_question = request.question.strip()
+    if not original_question:
         raise HTTPException(status_code=400, detail="请求体中必须包含 'question' 字段")
+
+    history = [turn.model_dump() for turn in request.history]
+    query_rewrite = rewrite_retrieval_query(
+        original_question,
+        history,
+        company_aliases,
+    )
+    question = query_rewrite.rewritten_query
+    resolved_question = question if query_rewrite.used_history else None
+    mentioned_companies = companies_mentioned_in(question)
+    query_debug_fields = {
+        "original_query": original_question,
+        "rewritten_query": question,
+        "query_rewrite_used": query_rewrite.used_history,
+        "query_rewrite_confidence": query_rewrite.confidence,
+        "query_rewrite_reason": query_rewrite.reason,
+    }
+
+    if query_rewrite.needs_clarification:
+        debug_payload = None
+        if request.debug or request.retrieval_only:
+            debug_payload = RetrievalDebug(
+                route="query_clarification",
+                mentioned_companies=[],
+                dense=[],
+                bm25=[],
+                fused=[],
+                reranked=[],
+                **query_debug_fields,
+            )
+        return QueryResponse(
+            success=True,
+            question=original_question,
+            answer=query_rewrite.clarification_question or "请补充更明确的查询条件。",
+            source_documents=[],
+            retrieval_debug=debug_payload,
+        )
 
     boundary_reason = knowledge_boundary_reason(question, mentioned_companies)
     if boundary_reason:
@@ -850,12 +898,14 @@ async def rag_query(request: QueryRequest):
                 bm25=[],
                 fused=[],
                 reranked=[],
+                **query_debug_fields,
             )
         return QueryResponse(
             success=True,
-            question=question,
+            question=original_question,
             answer=boundary_reason,
             source_documents=[],
+            resolved_question=resolved_question,
             retrieval_debug=debug_payload,
         )
 
@@ -885,12 +935,14 @@ async def rag_query(request: QueryRequest):
                 bm25=[],
                 fused=[],
                 reranked=[],
+                **query_debug_fields,
             )
         return QueryResponse(
             success=True,
-            question=question,
+            question=original_question,
             answer=structured_result.answer,
             source_documents=source_documents,
+            resolved_question=resolved_question,
             retrieval_debug=debug_payload,
         )
 
@@ -921,9 +973,10 @@ async def rag_query(request: QueryRequest):
                     print(f"⚡ FAQ命中，相似度={top_score:.4f}")
                     return QueryResponse(
                         success=True,
-                        question=question,
+                        question=original_question,
                         answer=cached_answer,
-                        source_documents=[]
+                        source_documents=[],
+                        resolved_question=resolved_question,
                     )
             except Exception as e:
                 # 内层 FAQ 匹配可能出错，但不应该阻断后续混合检索
@@ -991,12 +1044,14 @@ async def rag_query(request: QueryRequest):
                     bm25=[to_debug_item(item) for item in bm25_ranked],
                     fused=[to_debug_item(item) for item in fused_ranked],
                     reranked=[],
+                    **query_debug_fields,
                 )
             return QueryResponse(
                 success=False,
-                question=question,
+                question=original_question,
                 answer="未能从知识库中检索到相关信息，请尝试换个说法或检查输入。",
                 source_documents=[],
+                resolved_question=resolved_question,
                 retrieval_debug=debug_payload,
             )
 
@@ -1026,13 +1081,15 @@ async def rag_query(request: QueryRequest):
                 bm25=[to_debug_item(item) for item in bm25_ranked],
                 fused=[to_debug_item(item) for item in fused_ranked],
                 reranked=[to_debug_item(item) for item in reranked_items],
+                **query_debug_fields,
             )
         if not is_retrieval_relevant(question, reranked_items):
             return QueryResponse(
                 success=True,
-                question=question,
+                question=original_question,
                 answer="未找到与问题相关的信息，无法回答。",
                 source_documents=[],
+                resolved_question=resolved_question,
                 retrieval_debug=debug_payload,
             )
         if request.retrieval_only:
@@ -1072,9 +1129,10 @@ async def rag_query(request: QueryRequest):
 
         return QueryResponse(
             success=True,
-            question=question,
+            question=original_question,
             answer=answer,
             source_documents=source_documents,
+            resolved_question=resolved_question,
             retrieval_debug=debug_payload,
         )
 
