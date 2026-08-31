@@ -1,0 +1,13 @@
+.env
+.cache/
+.DS_Store
+__pycache__/
+*.py[cod]
+.ruff_cache/
+.pytest_cache/
+faq_cache/
+few_shot_examples.json
+my_project_env/
+tmp/
+.~*
+~$*

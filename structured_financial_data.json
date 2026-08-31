@@ -1,0 +1,159 @@
+{
+  "version": "1.0",
+  "description": "从项目公司报告第1页人工核对的核心财务指标。金额value统一为对应币种的最小展示单位（元或美元），比率value统一为百分数。",
+  "companies": {
+    "滨江消费品有限公司": {
+      "report_year": 2021,
+      "currency": "CNY",
+      "source_file": "11_滨江消费品有限公司_report.pdf",
+      "page_number": 1,
+      "metrics": {
+        "revenue": {"value": "80000000", "display": "8000万元"},
+        "net_profit": {"value": "5000000", "display": "500万元"},
+        "total_assets": {"value": "200000000", "display": "20000万元"},
+        "total_liabilities": {"value": "80000000", "display": "8000万元"},
+        "equity": {"value": "120000000", "display": "12000万元"},
+        "cash_flow": {"value": "10000000", "display": "1000万元"},
+        "debt_ratio": {"value": "40", "display": "40%"},
+        "asset_liability_ratio": {"value": "40", "display": "40%"},
+        "roe": {"value": "4", "display": "4%"}
+      }
+    },
+    "澜赋科技有限公司": {
+      "report_year": 2021,
+      "currency": "CNY",
+      "source_file": "12_澜赋科技有限公司_report.pdf",
+      "page_number": 1,
+      "metrics": {
+        "revenue": {"value": "80000000", "display": "8000万元"},
+        "net_profit": {"value": "20000000", "display": "2000万元"},
+        "total_assets": {"value": "150000000", "display": "15000万元"},
+        "total_liabilities": {"value": "50000000", "display": "5000万元"},
+        "equity": {"value": "100000000", "display": "10000万元"},
+        "cash_flow": {"value": "30000000", "display": "3000万元"},
+        "debt_ratio": {"value": "33", "display": "33%（报告原文为0.33）"},
+        "asset_liability_ratio": {"value": "25", "display": "25%（报告原文为0.25）"},
+        "roe": {"value": "20", "display": "20%（报告原文为0.20）"}
+      }
+    },
+    "阳光传媒集团有限公司": {
+      "report_year": 2021,
+      "currency": "CNY",
+      "source_file": "13_阳光传媒集团有限公司_report.pdf",
+      "page_number": 1,
+      "metrics": {
+        "revenue": {"value": "23800000000", "display": "238亿元"},
+        "net_profit": {"value": "3800000000", "display": "38亿元"},
+        "total_assets": {"value": "16800000000", "display": "168亿元"},
+        "total_liabilities": {"value": "7800000000", "display": "78亿元"},
+        "equity": {"value": "9000000000", "display": "90亿元"},
+        "cash_flow": {"value": "4600000000", "display": "46亿元"},
+        "debt_ratio": {"value": "46.43", "display": "46.43%"},
+        "asset_liability_ratio": {"value": "46.43", "display": "46.43%"},
+        "roe": {"value": "29.41", "display": "29.41%"}
+      }
+    },
+    "美好家政服务有限公司": {
+      "report_year": 2018,
+      "currency": "CNY",
+      "source_file": "14_美好家政服务有限公司_report.pdf",
+      "page_number": 1,
+      "metrics": {
+        "revenue": {"value": "7000000", "display": "700万元"},
+        "net_profit": {"value": "800000", "display": "80万元"},
+        "total_assets": {"value": "50000000", "display": "5000万元"},
+        "total_liabilities": {"value": "20000000", "display": "2000万元"},
+        "equity": {"value": "30000000", "display": "3000万元"},
+        "cash_flow": {"value": "10000000", "display": "1000万元"},
+        "debt_ratio": {"value": "40", "display": "40%"},
+        "asset_liability_ratio": {"value": "40", "display": "40%"},
+        "roe": {"value": "8", "display": "8%"}
+      }
+    },
+    "蓝天旅游有限公司": {
+      "report_year": 2021,
+      "currency": "CNY",
+      "source_file": "18_蓝天旅游有限公司_report.pdf",
+      "page_number": 1,
+      "metrics": {
+        "revenue": {"value": "100000000", "display": "1亿元（报告原文为100000000元）"},
+        "net_profit": {"value": "5000000", "display": "500万元（报告原文为5000000元）"},
+        "total_assets": {"value": "200000000", "display": "2亿元"},
+        "total_liabilities": {"value": "80000000", "display": "8000万元"},
+        "equity": {"value": "120000000", "display": "1.2亿元"},
+        "cash_flow": {"value": "60000000", "display": "6000万元"},
+        "debt_ratio": {"value": "40", "display": "40%"},
+        "asset_liability_ratio": {"value": "40", "display": "40%"},
+        "roe": {"value": "5", "display": "5%"}
+      }
+    },
+    "绿源环保有限公司": {
+      "report_year": 2017,
+      "currency": "CNY",
+      "source_file": "5_绿源环保有限公司_report.pdf",
+      "page_number": 1,
+      "metrics": {
+        "revenue": {"value": "1000000000", "display": "10亿元"},
+        "net_profit": {"value": "200000000", "display": "2亿元"},
+        "total_assets": {"value": "2000000000", "display": "20亿元"},
+        "total_liabilities": {"value": "1000000000", "display": "10亿元"},
+        "equity": {"value": "1000000000", "display": "10亿元"},
+        "cash_flow": {"value": "400000000", "display": "4亿元"},
+        "debt_ratio": {"value": "50", "display": "50%"},
+        "asset_liability_ratio": {"value": "50", "display": "50%"},
+        "roe": {"value": "20", "display": "20%"}
+      }
+    },
+    "拓远科技有限公司": {
+      "report_year": 2021,
+      "currency": "CNY",
+      "source_file": "6_拓远科技有限公司_report.pdf",
+      "page_number": 1,
+      "metrics": {
+        "revenue": {"value": "10000000000", "display": "100亿元"},
+        "net_profit": {"value": "800000000", "display": "8亿元"},
+        "total_assets": {"value": "15000000000", "display": "150亿元"},
+        "total_liabilities": {"value": "5000000000", "display": "50亿元"},
+        "equity": {"value": "10000000000", "display": "100亿元"},
+        "cash_flow": {"value": "2500000000", "display": "25亿元"},
+        "debt_ratio": {"value": "33.3", "display": "33.3%"},
+        "asset_liability_ratio": {"value": "50", "display": "50%（按报告原文）"},
+        "roe": {"value": "10", "display": "10%"}
+      }
+    },
+    "医疗先锋股份有限公司": {
+      "report_year": 2021,
+      "currency": "CNY",
+      "source_file": "8_医疗先锋股份有限公司_report.pdf",
+      "page_number": 1,
+      "metrics": {
+        "revenue": {"value": "15000000000", "display": "150亿元"},
+        "net_profit": {"value": "3000000000", "display": "30亿元"},
+        "total_assets": {"value": "50000000000", "display": "500亿元"},
+        "total_liabilities": {"value": "20000000000", "display": "200亿元"},
+        "equity": {"value": "30000000000", "display": "300亿元"},
+        "cash_flow": {"value": "8000000000", "display": "80亿元"},
+        "debt_ratio": {"value": "40", "display": "40%"},
+        "asset_liability_ratio": {"value": "40", "display": "40%"},
+        "roe": {"value": "10", "display": "10%"}
+      }
+    },
+    "能源巨星有限公司": {
+      "report_year": 2017,
+      "currency": "USD",
+      "source_file": "9_能源巨星有限公司_report.pdf",
+      "page_number": 1,
+      "metrics": {
+        "revenue": {"value": "250000000", "display": "2.5亿美元"},
+        "net_profit": {"value": "40000000", "display": "4000万美元"},
+        "total_assets": {"value": "1000000000", "display": "10亿美元"},
+        "total_liabilities": {"value": "500000000", "display": "5亿美元"},
+        "equity": {"value": "500000000", "display": "5亿美元"},
+        "cash_flow": {"value": "10000000", "display": "1000万美元"},
+        "debt_ratio": {"value": "50", "display": "50%"},
+        "asset_liability_ratio": {"value": "50", "display": "50%"},
+        "roe": {"value": "8", "display": "8%"}
+      }
+    }
+  }
+}

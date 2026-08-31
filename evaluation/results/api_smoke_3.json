@@ -1,0 +1,87 @@
+{
+  "endpoint": "http://127.0.0.1:8001/rag_query",
+  "summary": {
+    "total": 3,
+    "answer_accuracy": 1.0,
+    "citation_hit_rate": 1.0,
+    "citation_recall": 1.0,
+    "refusal_accuracy": 0.0,
+    "end_to_end_correct_rate": 1.0,
+    "mean_latency_seconds": 10.486107819364406,
+    "errors": 0
+  },
+  "results": [
+    {
+      "query_id": "F001",
+      "question": "滨江消费品有限公司2021年的营业收入是多少？",
+      "answerable": true,
+      "answer": "\n滨江消费品有限公司2021年的营业收入是8000万元。",
+      "answer_pass": true,
+      "citation_hit": true,
+      "citation_recall": 1.0,
+      "refusal_pass": true,
+      "latency_seconds": 9.237989666988142,
+      "predicted_pages": [
+        [
+          "11_滨江消费品有限公司_report.pdf",
+          1
+        ]
+      ],
+      "gold_pages": [
+        [
+          "11_滨江消费品有限公司_report.pdf",
+          1
+        ]
+      ],
+      "error": null
+    },
+    {
+      "query_id": "F002",
+      "question": "滨江消费品有限公司2021年的净利润是多少？",
+      "answerable": true,
+      "answer": "\n滨江消费品有限公司2021年的净利润是500万元。",
+      "answer_pass": true,
+      "citation_hit": true,
+      "citation_recall": 1.0,
+      "refusal_pass": true,
+      "latency_seconds": 9.078914875048213,
+      "predicted_pages": [
+        [
+          "11_滨江消费品有限公司_report.pdf",
+          1
+        ]
+      ],
+      "gold_pages": [
+        [
+          "11_滨江消费品有限公司_report.pdf",
+          1
+        ]
+      ],
+      "error": null
+    },
+    {
+      "query_id": "F003",
+      "question": "滨江消费品有限公司的资产负债率是多少？",
+      "answerable": true,
+      "answer": "\n滨江消费品有限公司的资产负债率为40%。",
+      "answer_pass": true,
+      "citation_hit": true,
+      "citation_recall": 1.0,
+      "refusal_pass": true,
+      "latency_seconds": 13.141418916056864,
+      "predicted_pages": [
+        [
+          "11_滨江消费品有限公司_report.pdf",
+          1
+        ]
+      ],
+      "gold_pages": [
+        [
+          "11_滨江消费品有限公司_report.pdf",
+          1
+        ]
+      ],
+      "error": null
+    }
+  ]
+}
