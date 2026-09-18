@@ -84,7 +84,7 @@ def load_and_split_pdf(
     """加载 PDF 文档并进行文本切分。"""
     all_chunks = []
 
-    seen_chunks: set[tuple[str, str]] = set()
+    seen_chunks: set[tuple[str, int, int, str]] = set()
 
     for file in sorted(os.listdir(folder_path)):
         if file.endswith(".pdf"):
@@ -105,8 +105,11 @@ def load_and_split_pdf(
             for chunk in chunks:
                 chunk.metadata["company"] = name
                 chunk.metadata["source_file"] = file
-                fingerprint = (name, normalize_text(chunk.page_content))
-                if not fingerprint[1] or fingerprint in seen_chunks:
+                fingerprint = (
+                    file, int(chunk.metadata.get("page", 0)),
+                    int(chunk.metadata.get("start_index", -1)), normalize_text(chunk.page_content),
+                )
+                if not fingerprint[3] or fingerprint in seen_chunks:
                     continue
                 seen_chunks.add(fingerprint)
                 unique_chunks.append(chunk)

@@ -1,7 +1,7 @@
 """FastAPI application for the finance-focused RAG pipeline."""
 import os
+import hashlib
 from pathlib import Path
-from dataclasses import dataclass
 import torch
 import requests
 import json
@@ -16,24 +16,34 @@ from langchain_community.vectorstores import FAISS
 from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_core.documents import Document
 from rank_bm25 import BM25Okapi
-#faq
-from sentence_transformers import SentenceTransformer, util
+from sentence_transformers import util
 #多次请求llm
 import time
 from .config import (
     CACHE_DIR,
+    BAD_CASE_PATH,
+    CURATED_BAD_CASE_PATH,
     DOCUMENTS_DIR,
     FEEDBACK_DB_PATH,
     FEW_SHOT_PATH,
-    FAQ_CACHE_PATH,
     INDEX_DIR,
     PROJECT_ROOT,
+    QUERY_TRACE_PATH,
     STRUCTURED_FINANCE_PATH,
     ensure_runtime_directories,
 )
+from .bad_cases import BadCaseStore, DISPOSITIONS, FAILURE_STAGES
 from .feedback import update_few_shot
 from .finance import StructuredFinanceEngine
 from .query_rewrite import rewrite_retrieval_query
+from .telemetry import measure_stage, new_telemetry, record_usage
+from .retrieval_config import RetrievalConfig
+from .retrieval import (
+    RankedDocument, document_key, dedupe_documents, tokenize_chinese_bm25, tokenize_whitespace,
+    build_company_aliases as _build_company_aliases,
+    companies_mentioned_in as _companies_mentioned_in,
+    dense_search as _dense_search, bm25_search as _bm25_search, rrf_fuse as _rrf_fuse,
+)
 
 # --- 1. 初始化和配置 ---
 print("正在初始化 FastAPI 应用和 RAG 系统...")
@@ -63,13 +73,14 @@ SILICONFLOW_API_KEY = os.getenv("SILICONFLOW_API_KEY")
 RERANKER_MODEL = os.getenv("RERANKER_MODEL", "BAAI/bge-reranker-v2-m3")
 LLM_MODEL = os.getenv("LLM_MODEL", "deepseek-ai/DeepSeek-R1-0528-Qwen3-8B")
 SILICONFLOW_API_BASE = "https://api.siliconflow.cn/v1"
-BM25_TOP_K = int(os.getenv("BM25_TOP_K", "20"))
-DENSE_TOP_K = int(os.getenv("DENSE_TOP_K", "10"))
-FUSED_TOP_K = int(os.getenv("FUSED_TOP_K", "30"))
+RETRIEVAL_CONFIG = RetrievalConfig.from_env()
+BM25_TOP_K = RETRIEVAL_CONFIG.bm25_top_k
+DENSE_TOP_K = RETRIEVAL_CONFIG.dense_top_k
+FUSED_TOP_K = RETRIEVAL_CONFIG.fused_top_k
 RERANK_TOP_N = int(os.getenv("RERANK_TOP_N", "3"))
-RRF_K = int(os.getenv("RRF_K", "5"))
-DENSE_RRF_WEIGHT = float(os.getenv("DENSE_RRF_WEIGHT", "3.0"))
-BM25_RRF_WEIGHT = float(os.getenv("BM25_RRF_WEIGHT", "1.0"))
+RRF_K = RETRIEVAL_CONFIG.rrf_k
+DENSE_RRF_WEIGHT = RETRIEVAL_CONFIG.dense_rrf_weight
+BM25_RRF_WEIGHT = RETRIEVAL_CONFIG.bm25_rrf_weight
 RERANK_RELEVANCE_MIN_SCORE = float(
     os.getenv("RERANK_RELEVANCE_MIN_SCORE", "0.15")
 )
@@ -77,10 +88,6 @@ EMBEDDING_RELEVANCE_MIN_SCORE = float(
     os.getenv("EMBEDDING_RELEVANCE_MIN_SCORE", "0.35")
 )
 RERANK_TIMEOUT_SECONDS = float(os.getenv("RERANK_TIMEOUT_SECONDS", "10"))
-
-#faq配置
-faq_model = SentenceTransformer(EMBEDDING_MODEL_NAME_OR_PATH, device=DEVICE)
-faq_threshold = float(os.getenv("FAQ_SIMILARITY_THRESHOLD", "0.88"))
 
 # 定义反馈数据的存储路径
 # 第一步：创建FastAPI应用实例（必须在装饰器前定义）
@@ -130,6 +137,14 @@ print("RAG系统初始化完成，准备好接收请求。")
 with open(os.path.join(FAISS_DB_PATH, "documents_metadata.json"), "r", encoding="utf-8") as f:
     raw_chunks = json.load(f)
 
+metadata_path = Path(FAISS_DB_PATH) / "documents_metadata.json"
+KB_VERSION = hashlib.sha256(metadata_path.read_bytes()).hexdigest()[:12]
+bad_case_store = BadCaseStore(
+    QUERY_TRACE_PATH,
+    BAD_CASE_PATH,
+    max_traces=int(os.getenv("BAD_CASE_TRACE_LIMIT", "500")),
+)
+
 # 还原为 Document 对象
 documents_for_bm25 = [
     Document(page_content=item["content"], metadata=item["metadata"])
@@ -145,33 +160,8 @@ for doc in documents_for_bm25:
         documents_by_company.setdefault(company, []).append(doc)
 
 
-MANUAL_COMPANY_ALIASES = {
-    "滨江消费品有限公司": ["滨江消费品"],
-    "澜赋科技有限公司": ["澜赋科技"],
-    "阳光传媒集团有限公司": ["阳光传媒"],
-    "美好家政服务有限公司": ["美好家政", "美好家政服务"],
-    "蓝天旅游有限公司": ["蓝天旅游"],
-    "ACME研发有限公司": ["ACME研发", "ACME"],
-    "绿源环保有限公司": ["绿源环保"],
-    "拓远科技有限公司": ["拓远科技"],
-    "医疗先锋股份有限公司": ["医疗先锋"],
-    "能源巨星有限公司": ["能源巨星"],
-}
-
-
 def build_company_aliases() -> dict[str, str]:
-    aliases: dict[str, str] = {}
-    suffixes = ("集团有限公司", "股份有限公司", "有限责任公司", "有限公司")
-    for company in documents_by_company:
-        candidates = {company, *MANUAL_COMPANY_ALIASES.get(company, [])}
-        for suffix in suffixes:
-            if company.endswith(suffix):
-                candidates.add(company[: -len(suffix)])
-        for alias in candidates:
-            normalized = alias.strip()
-            if len(normalized) >= 4:
-                aliases[normalized.casefold()] = company
-    return aliases
+    return _build_company_aliases(documents_by_company)
 
 
 company_aliases = build_company_aliases()
@@ -179,14 +169,7 @@ company_aliases = build_company_aliases()
 
 def companies_mentioned_in(question: str) -> list[str]:
     """识别全称和常用简称，返回去重后的知识库标准公司名。"""
-    lowered = question.casefold()
-    result = []
-    seen = set()
-    for alias, company in sorted(company_aliases.items(), key=lambda item: len(item[0]), reverse=True):
-        if alias in lowered and company not in seen:
-            result.append(company)
-            seen.add(company)
-    return result
+    return _companies_mentioned_in(question, company_aliases)
 
 
 def load_pdf_pages() -> dict[tuple[str, int], str]:
@@ -248,102 +231,31 @@ def knowledge_boundary_reason(question: str, mentioned_companies: list[str]) -> 
             return f"现有报告未覆盖{years_text}年的信息，无法回答。"
     return None
 
-def tokenize_chinese_bm25(text: str) -> list[str]:
-    """中文字符 unigram + bigram，并保留英文/数字词。
-
-    当前数据量较小，这个方案无需额外词典，且离线评测明显优于按空格分词。
-    后续可以继续与 jieba + 金融词典做对照实验。
-    """
-    import re
-
-    lowered = text.lower()
-    latin_tokens = re.findall(r"[a-z0-9]+(?:[._%-][a-z0-9]+)*", lowered)
-    chinese_runs = re.findall(r"[\u4e00-\u9fff]+", lowered)
-    chinese_tokens: list[str] = []
-    for run in chinese_runs:
-        chinese_tokens.extend(run)
-        chinese_tokens.extend(run[index : index + 2] for index in range(len(run) - 1))
-    return latin_tokens + chinese_tokens
-
-
 bm25_model = BM25Okapi(
-    [tokenize_chinese_bm25(doc.page_content) for doc in documents_for_bm25]
+    [(tokenize_chinese_bm25 if RETRIEVAL_CONFIG.bm25_tokenizer == "char-bigram" else tokenize_whitespace)(doc.page_content)
+     for doc in documents_for_bm25]
 )
 
 
-@dataclass
-class RankedDocument:
-    document: Document
-    score: float | None
-    rank: int
-    method: str
-
-
-def normalize_content(content: str) -> str:
-    """标准化正文，用于跨检索器识别同一个 Chunk。"""
-    import re
-
-    content = re.sub(r"\s+", "", content)
-    content = re.sub(r"[^\w]", "", content)
-    return content.lower()
-
-
-def document_key(doc: Document) -> tuple[str, int, int, str]:
-    return (
-        str(doc.metadata.get("source_file", "")),
-        int(doc.metadata.get("page", 0)),
-        int(doc.metadata.get("start_index", -1)),
-        normalize_content(doc.page_content),
-    )
-
-
-def dense_search(question: str, k: int = DENSE_TOP_K) -> list[RankedDocument]:
-    results = faiss_db.similarity_search_with_score(question, k=k)
-    return [
-        RankedDocument(document=doc, score=float(score), rank=rank, method="dense")
-        for rank, (doc, score) in enumerate(results, 1)
-    ]
-
-
-def bm25_search(question: str, k: int = BM25_TOP_K) -> list[RankedDocument]:
-    scores = bm25_model.get_scores(tokenize_chinese_bm25(question))
-    indices = sorted(
-        range(len(documents_for_bm25)),
-        key=lambda index: float(scores[index]),
-        reverse=True,
-    )
-    ranked = []
-    for index in indices:
-        score = float(scores[index])
-        if score <= 0:
-            continue
-        ranked.append(
-            RankedDocument(
-                document=documents_for_bm25[index],
-                score=score,
-                rank=len(ranked) + 1,
-                method="bm25",
-            )
-        )
-        if len(ranked) >= k:
-            break
-    return ranked
-
-
-def filter_ranked_by_company(
-    ranked: list[RankedDocument], target_companies: set[str]
+def dense_search(
+    question: str,
+    k: int = DENSE_TOP_K,
+    target_companies: set[str] | None = None,
 ) -> list[RankedDocument]:
-    if not target_companies:
-        return ranked
-    filtered = [
-        item
-        for item in ranked
-        if str(item.document.metadata.get("company", "")) in target_companies
-    ]
-    return [
-        RankedDocument(item.document, item.score, rank, item.method)
-        for rank, item in enumerate(filtered, 1)
-    ]
+    """返回约束范围内的 Dense TopK，避免先取全局 TopK 再过滤造成漏召回。"""
+    return _dense_search(question, vectorstore=faiss_db, documents=documents_for_bm25,
+                         k=k, target_companies=target_companies)
+
+
+def bm25_search(
+    question: str,
+    k: int = BM25_TOP_K,
+    target_companies: set[str] | None = None,
+) -> list[RankedDocument]:
+    """返回约束范围内的 BM25 TopK。"""
+    return _bm25_search(question, bm25_model=bm25_model, documents=documents_for_bm25,
+                        k=k, target_companies=target_companies,
+                        tokenizer=tokenize_chinese_bm25 if RETRIEVAL_CONFIG.bm25_tokenizer == "char-bigram" else tokenize_whitespace)
 
 
 def rrf_fuse(
@@ -352,26 +264,8 @@ def rrf_fuse(
     limit: int = FUSED_TOP_K,
     weights: tuple[float, ...] = (DENSE_RRF_WEIGHT, BM25_RRF_WEIGHT),
 ) -> list[RankedDocument]:
-    """使用开发集选出的加权 RRF 合并不同分数尺度的召回结果。"""
-    fused_scores: dict[tuple[str, int, int, str], float] = {}
-    documents: dict[tuple[str, int, int, str], Document] = {}
-    if len(weights) != len(rankings):
-        raise ValueError("RRF weights 数量必须与 rankings 数量一致")
-    for ranking, weight in zip(rankings, weights):
-        for item in ranking:
-            key = document_key(item.document)
-            documents.setdefault(key, item.document)
-            fused_scores[key] = fused_scores.get(key, 0.0) + weight / (rrf_k + item.rank)
-    sorted_items = sorted(fused_scores.items(), key=lambda item: item[1], reverse=True)
-    return [
-        RankedDocument(
-            document=documents[key],
-            score=float(score),
-            rank=rank,
-            method="rrf",
-        )
-        for rank, (key, score) in enumerate(sorted_items[:limit], 1)
-    ]
+    """用当前开发基线的加权 RRF 合并不同分数尺度的召回结果。"""
+    return _rrf_fuse(rankings, rrf_k=rrf_k, limit=limit, weights=weights)
 
 # --- 3. Pydantic 模型定义 ---
 class ConversationTurn(BaseModel):
@@ -399,6 +293,8 @@ class RetrievalDebugItem(BaseModel):
     company: str
     source_file: str | None = None
     page_number: int | None = None
+    chunk_id: str | None = None
+    start_index: int | None = None
 
 
 class RetrievalDebug(BaseModel):
@@ -421,6 +317,8 @@ class QueryResponse(BaseModel):
     source_documents: List[SourceDocument]
     resolved_question: str | None = None
     retrieval_debug: RetrievalDebug | None = None
+    trace_id: str | None = None
+    telemetry: Dict[str, Any] = Field(default_factory=dict)
 
 class HealthResponse(BaseModel):
     status: str
@@ -430,7 +328,60 @@ class FeedbackRequest(BaseModel):
     question: str
     answer: str
     sources: List[Dict]  # 前端传来的source_documents
-    feedback: str  # "useful"或"useless"
+    feedback: Literal["useful", "useless"]
+    trace_id: str | None = None
+
+
+class BadCaseReviewRequest(BaseModel):
+    failure_stage: str
+    disposition: str = "evaluation_candidate"
+    review_notes: str = ""
+    expected_answer: str = ""
+    expected_pages: List[Dict[str, Any]] = Field(default_factory=list)
+
+
+def response_with_trace(
+    response: QueryResponse,
+    trace_debug: RetrievalDebug,
+    started_at: float,
+    history: list[dict] | None = None,
+) -> QueryResponse:
+    """记录一次完整链路，供负反馈后逐例定位，而不是复用旧答案。"""
+    trace_id = bad_case_store.record_trace(
+        {
+            "question": response.question,
+            "history": history or [],
+            "resolved_question": response.resolved_question,
+            "answer": response.answer,
+            "success": response.success,
+            "telemetry": response.telemetry,
+            "sources": [
+                {
+                    "company": source.company,
+                    "source_file": source.source_file,
+                    "page_number": source.page_number,
+                }
+                for source in response.source_documents
+            ],
+            "retrieval_debug": trace_debug.model_dump(),
+            "knowledge_base_version": KB_VERSION,
+            "pipeline_config": {
+                **RETRIEVAL_CONFIG.to_dict(),
+                "embedding_model": EMBEDDING_MODEL_NAME_OR_PATH,
+                "reranker_model": RERANKER_MODEL,
+                "llm_model": LLM_MODEL,
+                "dense_top_k": DENSE_TOP_K,
+                "bm25_top_k": BM25_TOP_K,
+                "fused_top_k": FUSED_TOP_K,
+                "rerank_top_n": RERANK_TOP_N,
+                "rrf_k": RRF_K,
+                "dense_rrf_weight": DENSE_RRF_WEIGHT,
+                "bm25_rrf_weight": BM25_RRF_WEIGHT,
+            },
+            "latency_ms": round((time.perf_counter() - started_at) * 1000, 2),
+        }
+    )
+    return response.model_copy(update={"trace_id": trace_id})
 
 # 新增保存反馈的接口
 @app.post("/save_feedback")
@@ -442,18 +393,70 @@ async def save_feedback(feedback: FeedbackRequest):
     new_feedback = {
         "question": feedback.question,
         "answer": feedback.answer,
-        "context": "\n\n".join([s["content"] for s in feedback.sources]),  # 提取上下文
+        "context": "\n\n".join(str(s.get("content", "")) for s in feedback.sources),
         "feedback": feedback.feedback,
+        "trace_id": feedback.trace_id,
         "timestamp": time.time()
     }
     feedback_list.append(new_feedback)
     # 保存更新
     with open(FEEDBACK_DB_PATH, "w", encoding="utf-8") as f:
         json.dump(feedback_list, f, ensure_ascii=False, indent=2)
-    return {"status": "success"}
+    bad_case = bad_case_store.create_from_feedback(
+        question=feedback.question,
+        answer=feedback.answer,
+        sources=feedback.sources,
+        feedback=feedback.feedback,
+        trace_id=feedback.trace_id,
+    )
+    return {
+        "status": "success",
+        "bad_case_id": bad_case.get("bad_case_id") if bad_case else None,
+        "queued_for_review": bad_case is not None,
+    }
+
+
+@app.get("/bad_cases")
+async def list_bad_cases(status: str | None = None):
+    """查看待审核或已审核的逐例问题。"""
+    return {"items": bad_case_store.list_cases(status=status)}
+
+
+@app.get("/bad_cases/schema")
+async def bad_case_schema():
+    return {
+        "failure_stages": list(FAILURE_STAGES),
+        "dispositions": list(DISPOSITIONS),
+    }
+
+
+@app.post("/bad_cases/{bad_case_id}/review")
+async def review_bad_case(bad_case_id: str, review: BadCaseReviewRequest):
+    try:
+        item = bad_case_store.review_case(
+            bad_case_id,
+            failure_stage=review.failure_stage,
+            disposition=review.disposition,
+            review_notes=review.review_notes,
+            expected_answer=review.expected_answer,
+            expected_pages=review.expected_pages,
+        )
+        return {"status": "success", "item": item}
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@app.post("/bad_cases/export")
+async def export_bad_cases():
+    count = bad_case_store.export_reviewed(CURATED_BAD_CASE_PATH)
+    return {"status": "success", "count": count, "path": str(CURATED_BAD_CASE_PATH)}
+
+
 @app.get("/update_few_shot")
 async def trigger_update_few_shot():
-    """手动触发更新 few-shot 示例（从 feedback_db 中筛选优质数据）"""
+    """从人工审核且已纠正的 few-shot 候选中重新生成示例。"""
     try:
         update_few_shot()
         return {"status": "success", "message": "few-shot 示例已更新"}
@@ -463,20 +466,6 @@ async def trigger_update_few_shot():
 
 def page_key(doc: Document) -> tuple[str, int]:
     return str(doc.metadata.get("source_file", "")), int(doc.metadata.get("page", 0))
-
-
-def collapse_candidates_to_pages(docs: list[Document]) -> list[Document]:
-    """将同页多个 Chunk 合并成完整页面后再重排，提高页面选择与引用精度。"""
-    pages = []
-    seen = set()
-    for doc in docs:
-        key = page_key(doc)
-        if key in seen:
-            continue
-        seen.add(key)
-        content = pdf_page_texts.get(key) or doc.page_content
-        pages.append(Document(page_content=content, metadata=doc.metadata))
-    return pages
 
 
 def select_diverse_pages(
@@ -515,13 +504,13 @@ def select_diverse_pages(
     return selected[:effective_top_n]
 
 
-def local_page_rerank(
+def local_chunk_rerank(
     query: str,
     docs: list[Document],
     top_n: int,
     required_companies: list[str] | None = None,
 ) -> list[RankedDocument]:
-    """云端重排超时后的页面级中文 BM25 兜底。"""
+    """云端重排超时后的 Chunk 级中文 BM25 兜底。"""
     local_bm25 = BM25Okapi([tokenize_chinese_bm25(doc.page_content) for doc in docs])
     scores = local_bm25.get_scores(tokenize_chinese_bm25(query))
     ordered = sorted(
@@ -541,19 +530,26 @@ def rerank_documents(
     docs: list[Document],
     top_n: int = RERANK_TOP_N,
     required_companies: list[str] | None = None,
+    telemetry: dict | None = None,
 ) -> list[RankedDocument]:
     """使用 SiliconFlow API 对文档进行重排"""
-    # 多公司比较和跨页题更依赖精确关键词与公司覆盖；页面级 BM25 在开发集上
-    # 比逐页云端相关性分数更稳定，同时避免多页请求超时。
+    # 多公司比较和跨页题更依赖精确关键词与公司覆盖；Chunk 级 BM25 在开发集上
+    # 比逐项云端相关性分数更稳定，同时避免请求超时。
+    telemetry = telemetry if telemetry is not None else new_telemetry()
+    if not docs:
+        return []
     if top_n > 1 and len(required_companies or []) <= 1:
-        return local_page_rerank(query, docs, top_n, required_companies)
+        telemetry["reranker_method"] = "local_bm25_multi_page"
+        return local_chunk_rerank(query, docs, top_n, required_companies)
     if not SILICONFLOW_API_KEY:
-        return local_page_rerank(query, docs, top_n, required_companies)
+        telemetry["reranker_method"] = "local_bm25_no_api_key"
+        return local_chunk_rerank(query, docs, top_n, required_companies)
     doc_contents = [doc.page_content for doc in docs]
     payload = {"model": RERANKER_MODEL, "query": query, "documents": doc_contents}
     headers = {"Authorization": f"Bearer {SILICONFLOW_API_KEY}", "Content-Type": "application/json"}
 
     try:
+        telemetry["reranker_attempts"] += 1
         response = requests.post(
             f"{SILICONFLOW_API_BASE}/rerank",
             json=payload,
@@ -562,6 +558,8 @@ def rerank_documents(
         )
         response.raise_for_status()
         rerank_results = response.json().get("results", [])
+        if not rerank_results:
+            raise ValueError("empty reranker results")
 
         # 将rerank结果与原始文档关联并排序
         reranked_items = [
@@ -572,6 +570,7 @@ def rerank_documents(
         selected = select_diverse_pages(
             reranked_items, top_n, required_companies
         )
+        telemetry["reranker_method"] = "cloud_reranker"
 
         return [
             RankedDocument(
@@ -582,9 +581,11 @@ def rerank_documents(
             )
             for rank, (document, score) in enumerate(selected, 1)
         ]
-    except requests.RequestException as e:
-        print(f"Reranker API 调用失败: {e}")
-        return local_page_rerank(query, docs, top_n, required_companies)
+    except (requests.RequestException, ValueError, KeyError, IndexError, TypeError) as e:
+        telemetry["reranker_method"] = "local_bm25_api_fallback"
+        telemetry["reranker_error_type"] = type(e).__name__
+        print(f"Reranker API 调用失败: {type(e).__name__}")
+        return local_chunk_rerank(query, docs, top_n, required_companies)
 
 
 def expand_ranked_to_full_pages(items: list[RankedDocument]) -> list[RankedDocument]:
@@ -632,6 +633,8 @@ def to_debug_item(item: RankedDocument) -> RetrievalDebugItem:
         company=str(metadata.get("company", "未知公司")),
         source_file=str(metadata.get("source_file", "")) or None,
         page_number=int(metadata.get("page", 0)) + 1,
+        chunk_id=hashlib.sha256(repr(document_key(item.document)).encode()).hexdigest()[:16],
+        start_index=int(metadata.get("start_index", -1)),
     )
 
 #相关性过滤
@@ -655,7 +658,7 @@ def is_retrieval_relevant(
     if reranker_scores:
         return max(reranker_scores) >= RERANK_RELEVANCE_MIN_SCORE
 
-    # API重排不可用时，以最佳页面语义相似度兜底，避免被后两页平均值拖低。
+    # API重排不可用时，以最佳 Chunk 的语义相似度兜底，避免被其他候选平均值拖低。
     reranked_docs = [item.document for item in reranked_items]
     question_emb = embeddings_model.embed_query(question)
     doc_embeddings = embeddings_model.embed_documents(
@@ -710,9 +713,11 @@ def validate_answer(answer: str, context_docs: list[Document], question: str = "
     
     return answer  # 验证通过
 
-def generate_answer(query: str, context_docs: list[Document]) -> str:
+def generate_answer(query: str, context_docs: list[Document], telemetry: dict | None = None) -> str:
     """使用 SiliconFlow API 和重排后的文档生成答案"""
+    telemetry = telemetry if telemetry is not None else new_telemetry()
     if not SILICONFLOW_API_KEY:
+        telemetry["llm_status"] = "not_configured"
         return "SiliconFlow API 密钥尚未配置，请先在 .env 文件中填写 SILICONFLOW_API_KEY。"
     # 1. 加载动态生成的few-shot示例
     few_shot_examples = []
@@ -730,7 +735,7 @@ def generate_answer(query: str, context_docs: list[Document]) -> str:
         ]
     # 2. 构建few-shot提示（将示例转化为文本）
     few_shot_text = ""
-    for i, example in enumerate(few_shot_examples, 1):
+    for i, example in enumerate(few_shot_examples[:5], 1):
         few_shot_text += f"""
     示例{i}：
     问题：{example['question']}
@@ -776,6 +781,7 @@ def generate_answer(query: str, context_docs: list[Document]) -> str:
     headers = {"Authorization": f"Bearer {SILICONFLOW_API_KEY}", "Content-Type": "application/json"}
     for attempt in range(3):  # 最多尝试3次
         try:
+            telemetry["llm_attempts"] += 1
             print(f"正在尝试调用 LLM (第 {attempt + 1} 次)...")
             response = requests.post(
                 f"{SILICONFLOW_API_BASE}/chat/completions",
@@ -784,19 +790,31 @@ def generate_answer(query: str, context_docs: list[Document]) -> str:
                 timeout=120
             )
             response.raise_for_status()
-            return response.json()['choices'][0]['message']['content']
+            result = response.json()
+            record_usage(telemetry, result.get("usage"))
+            answer = result['choices'][0]['message']['content']
+            if not isinstance(answer, str) or not answer.strip():
+                raise ValueError("empty LLM answer")
+            telemetry["llm_status"] = "success"
+            return answer
         except requests.RequestException as e:
-            print(f"[第 {attempt + 1} 次失败] LLM API 调用异常: {e}")
-            time.sleep(1.5) # 等待 1.5 秒后重试
-        except (KeyError, IndexError) as e:
-            print(f"[解析失败] LLM 响应结构异常: {e}")
+            telemetry["llm_status"] = "timeout" if isinstance(e, requests.Timeout) else "error"
+            telemetry["llm_error_type"] = type(e).__name__
+            status = e.response.status_code if e.response is not None else None
+            if status is not None and 400 <= status < 500 and status not in (408, 429):
+                break
+            if attempt < 2:
+                time.sleep(1.5)
+        except (KeyError, IndexError, ValueError, TypeError) as e:
+            telemetry["llm_status"] = "invalid_response"
+            telemetry["llm_error_type"] = type(e).__name__
             break  # 不用继续重试了，返回错误提示
 
     return "抱歉，多次尝试后仍无法获取答案，请稍后重试或联系管理员。"
 
 
-def should_cache_answer(answer: str) -> bool:
-    """只缓存成功且可复用的答案，避免错误或拒答污染FAQ。"""
+def is_supported_answer(answer: str) -> bool:
+    """判断答案是否成功通过边界和事实校验，可安全展示引用。"""
     blocked_fragments = (
         "无法回答",
         "未找到",
@@ -808,50 +826,25 @@ def should_cache_answer(answer: str) -> bool:
     return bool(answer.strip()) and not any(fragment in answer for fragment in blocked_fragments)
 
 
-def upsert_faq(question: str, answer: str) -> None:
-    if not should_cache_answer(answer):
-        return
-    try:
-        if FAQ_CACHE_PATH.exists():
-            with open(FAQ_CACHE_PATH, "r", encoding="utf-8") as f:
-                faqs = json.load(f)
-        else:
-            faqs = []
-        normalized_question = "".join(question.lower().split())
-        updated = False
-        deduplicated = []
-        seen_questions = set()
-        for item in faqs:
-            existing_question = str(item.get("question", ""))
-            key = "".join(existing_question.lower().split())
-            if not key or key in seen_questions:
-                continue
-            seen_questions.add(key)
-            if key == normalized_question:
-                deduplicated.append({"question": question, "answer": answer})
-                updated = True
-            else:
-                deduplicated.append(item)
-        if not updated:
-            deduplicated.append({"question": question, "answer": answer})
-        with open(FAQ_CACHE_PATH, "w", encoding="utf-8") as f:
-            json.dump(deduplicated, f, ensure_ascii=False, indent=2)
-    except Exception as exc:
-        print(f"[❌ 写入FAQ失败]: {exc}")
-
-
 # --- 5. FastAPI 应用和 API 路由 ---
 @app.post("/rag_query", response_model=QueryResponse)
 async def rag_query(request: QueryRequest):
     """
     接收用户问题，执行 RAG+Rerank 流程，并返回LLM生成的答案。
     """
+    started_at = time.perf_counter()
+    telemetry = new_telemetry()
+
+    def measured(stage, function, *args, **kwargs):
+        with measure_stage(telemetry, stage):
+            return function(*args, **kwargs)
+
     original_question = request.question.strip()
     if not original_question:
         raise HTTPException(status_code=400, detail="请求体中必须包含 'question' 字段")
 
     history = [turn.model_dump() for turn in request.history]
-    query_rewrite = rewrite_retrieval_query(
+    query_rewrite = measured("query_rewrite", rewrite_retrieval_query,
         original_question,
         history,
         company_aliases,
@@ -867,49 +860,67 @@ async def rag_query(request: QueryRequest):
         "query_rewrite_reason": query_rewrite.reason,
     }
 
+    def finish(response: QueryResponse, trace_debug: RetrievalDebug) -> QueryResponse:
+        if telemetry["outcome"] == "pending":
+            if not response.success:
+                telemetry["outcome"] = "service_error"
+            elif trace_debug.route == "query_clarification":
+                telemetry["outcome"] = "clarification"
+            elif trace_debug.route == "knowledge_boundary" or not is_supported_answer(response.answer):
+                telemetry["outcome"] = "refused"
+            elif request.retrieval_only and trace_debug.route == "rag":
+                telemetry["outcome"] = "retrieval_only"
+            else:
+                telemetry["outcome"] = "answered"
+        telemetry["stage_latency_ms"]["total"] = round((time.perf_counter() - started_at) * 1000, 3)
+        response = response.model_copy(update={"telemetry": telemetry})
+        return response_with_trace(response, trace_debug, started_at, history)
+
     if query_rewrite.needs_clarification:
-        debug_payload = None
-        if request.debug or request.retrieval_only:
-            debug_payload = RetrievalDebug(
-                route="query_clarification",
-                mentioned_companies=[],
-                dense=[],
-                bm25=[],
-                fused=[],
-                reranked=[],
-                **query_debug_fields,
-            )
-        return QueryResponse(
-            success=True,
-            question=original_question,
-            answer=query_rewrite.clarification_question or "请补充更明确的查询条件。",
-            source_documents=[],
-            retrieval_debug=debug_payload,
+        trace_debug = RetrievalDebug(
+            route="query_clarification",
+            mentioned_companies=[],
+            dense=[],
+            bm25=[],
+            fused=[],
+            reranked=[],
+            **query_debug_fields,
+        )
+        return finish(
+            QueryResponse(
+                success=True,
+                question=original_question,
+                answer=query_rewrite.clarification_question or "请补充更明确的查询条件。",
+                source_documents=[],
+                retrieval_debug=trace_debug if request.debug or request.retrieval_only else None,
+            ),
+            trace_debug,
         )
 
-    boundary_reason = knowledge_boundary_reason(question, mentioned_companies)
+    boundary_reason = measured("knowledge_boundary", knowledge_boundary_reason, question, mentioned_companies)
     if boundary_reason:
-        debug_payload = None
-        if request.debug or request.retrieval_only:
-            debug_payload = RetrievalDebug(
-                route="knowledge_boundary",
-                mentioned_companies=mentioned_companies,
-                dense=[],
-                bm25=[],
-                fused=[],
-                reranked=[],
-                **query_debug_fields,
-            )
-        return QueryResponse(
-            success=True,
-            question=original_question,
-            answer=boundary_reason,
-            source_documents=[],
-            resolved_question=resolved_question,
-            retrieval_debug=debug_payload,
+        trace_debug = RetrievalDebug(
+            route="knowledge_boundary",
+            mentioned_companies=mentioned_companies,
+            dense=[],
+            bm25=[],
+            fused=[],
+            reranked=[],
+            **query_debug_fields,
+        )
+        return finish(
+            QueryResponse(
+                success=True,
+                question=original_question,
+                answer=boundary_reason,
+                source_documents=[],
+                resolved_question=resolved_question,
+                retrieval_debug=trace_debug if request.debug or request.retrieval_only else None,
+            ),
+            trace_debug,
         )
 
-    structured_result = structured_finance_engine.answer(question, mentioned_companies)
+    structured_result = measured("structured_finance", structured_finance_engine.answer, question, mentioned_companies)
     if structured_result:
         source_documents = []
         for company, source_file, page_number in zip(
@@ -926,99 +937,46 @@ async def rag_query(request: QueryRequest):
                     page_number=page_number,
                 )
             )
-        debug_payload = None
-        if request.debug or request.retrieval_only:
-            debug_payload = RetrievalDebug(
-                route="structured_finance",
-                mentioned_companies=mentioned_companies,
-                dense=[],
-                bm25=[],
-                fused=[],
-                reranked=[],
-                **query_debug_fields,
-            )
-        return QueryResponse(
-            success=True,
-            question=original_question,
-            answer=structured_result.answer,
-            source_documents=source_documents,
-            resolved_question=resolved_question,
-            retrieval_debug=debug_payload,
+        trace_debug = RetrievalDebug(
+            route="structured_finance",
+            mentioned_companies=mentioned_companies,
+            dense=[],
+            bm25=[],
+            fused=[],
+            reranked=[],
+            **query_debug_fields,
+        )
+        return finish(
+            QueryResponse(
+                success=True,
+                question=original_question,
+                answer=structured_result.answer,
+                source_documents=source_documents,
+                resolved_question=resolved_question,
+                retrieval_debug=trace_debug if request.debug or request.retrieval_only else None,
+            ),
+            trace_debug,
         )
 
     print(f"\n收到新请求: {question}")
 
+    dense_ranked, bm25_ranked, fused_ranked, reranked_chunks = [], [], [], []
     try:
-        # ✅ FAQ 命中优先逻辑（外层 try 开始）
-        if FAQ_CACHE_PATH.exists():
-            with open(FAQ_CACHE_PATH, "r", encoding="utf-8") as f:
-                faqs = json.load(f)
-            questions = [item["question"] for item in faqs]
-        else:
-            faqs = []
-            questions = []
-
-        # 公司财务问题始终走知识库检索并返回引用，避免旧 FAQ 隐藏来源或返回过期结果。
-        if questions and not mentioned_companies and not request.debug and not request.retrieval_only:
-            try:
-                embeddings = faq_model.encode(questions, convert_to_tensor=True).to(DEVICE)
-                q_embedding = faq_model.encode(question, convert_to_tensor=True).to(DEVICE)
-
-                cosine_scores = util.cos_sim(q_embedding, embeddings)[0]
-                top_idx = int(torch.argmax(cosine_scores))
-                top_score = cosine_scores[top_idx].item()
-
-                if top_score >= faq_threshold:
-                    cached_answer = faqs[top_idx]["answer"]
-                    print(f"⚡ FAQ命中，相似度={top_score:.4f}")
-                    return QueryResponse(
-                        success=True,
-                        question=original_question,
-                        answer=cached_answer,
-                        source_documents=[],
-                        resolved_question=resolved_question,
-                    )
-            except Exception as e:
-                # 内层 FAQ 匹配可能出错，但不应该阻断后续混合检索
-                print(f"[❌ FAQ匹配异常] 发生错误：{e}")
-        elif request.debug or request.retrieval_only:
-            print("[调试模式] 已绕过FAQ，确保返回完整检索链路。")
-        elif mentioned_companies:
-            print("[公司问题] 已绕过FAQ，确保返回最新知识库引用。")
-        else:
-            print("[FAQ] 缓存为空，继续知识库检索。")
-
-        # === FAQ 未命中后，执行 Dense + 中文 BM25 + RRF 混合召回 ===
+        # 每次请求都走当前知识库链路；负反馈进入 Bad Case 队列逐例归因。
+        # === 执行 Dense + 中文 BM25 + RRF 混合召回 ===
         print("步骤 1: 正在执行 Dense + 中文BM25 + RRF 混合检索...")
-        dense_ranked = dense_search(question)
-        bm25_ranked = bm25_search(question)
         target_company_set = set(mentioned_companies)
+        dense_ranked = measured("dense", dense_search, question, target_companies=target_company_set)
+        bm25_ranked = measured("bm25", bm25_search, question, target_companies=target_company_set)
         if target_company_set:
-            dense_ranked = filter_ranked_by_company(dense_ranked, target_company_set)
-            bm25_ranked = filter_ranked_by_company(bm25_ranked, target_company_set)
             print(f"  - 已锁定公司: {', '.join(mentioned_companies)}")
 
-        fused_ranked = rrf_fuse([dense_ranked, bm25_ranked])
-        combined_docs = [item.document for item in fused_ranked]
-
-        # 问题明确提到公司时，将目标公司的其余切片作为低优先候选补充给Reranker。
-        # 这样既保留RRF顺序，又避免粗召回偶发漏掉目标公司的关键页面。
-        if target_company_set:
-            combined_docs.extend(
-                doc
-                for company in mentioned_companies
-                for doc in documents_by_company.get(company, [])
-            )
-
-        final_candidates = []
-        seen_contents = set()
-        for doc in combined_docs:
-            normalized = normalize_content(doc.page_content)
-            if not normalized or normalized in seen_contents:
-                continue
-            seen_contents.add(normalized)
-            final_candidates.append(doc)
-        final_candidates = collapse_candidates_to_pages(final_candidates)
+        fused_ranked = measured("fusion", rrf_fuse, [dense_ranked, bm25_ranked])
+        # RRF 已合并 Dense/BM25 的同一 Chunk。这里仅按稳定来源标识防御性去重，
+        # 不按正文跨文件去重，也不把整家公司未召回的 Chunk 无条件加回来。
+        final_candidates = dedupe_documents(
+            [item.document for item in fused_ranked]
+        )
 
         for label, ranking in (
             ("Dense", dense_ranked),
@@ -1034,81 +992,87 @@ async def rag_query(request: QueryRequest):
                     f"第{int(metadata.get('page', 0)) + 1}页"
                 )
 
-        print(f"  - 交给Reranker的去重候选数: {len(final_candidates)}")
+        print(f"  - 交给Chunk级Reranker的候选数: {len(final_candidates)}")
         if not final_candidates:
-            debug_payload = None
-            if request.debug or request.retrieval_only:
-                debug_payload = RetrievalDebug(
-                    mentioned_companies=mentioned_companies,
-                    dense=[to_debug_item(item) for item in dense_ranked],
-                    bm25=[to_debug_item(item) for item in bm25_ranked],
-                    fused=[to_debug_item(item) for item in fused_ranked],
-                    reranked=[],
-                    **query_debug_fields,
-                )
-            return QueryResponse(
-                success=False,
-                question=original_question,
-                answer="未能从知识库中检索到相关信息，请尝试换个说法或检查输入。",
-                source_documents=[],
-                resolved_question=resolved_question,
-                retrieval_debug=debug_payload,
+            telemetry["outcome"] = "insufficient_evidence"
+            trace_debug = RetrievalDebug(
+                mentioned_companies=mentioned_companies,
+                dense=[to_debug_item(item) for item in dense_ranked],
+                bm25=[to_debug_item(item) for item in bm25_ranked],
+                fused=[to_debug_item(item) for item in fused_ranked],
+                reranked=[],
+                **query_debug_fields,
+            )
+            return finish(
+                QueryResponse(
+                    success=True,
+                    question=original_question,
+                    answer="未能从知识库中检索到相关信息，请尝试换个说法或检查输入。",
+                    source_documents=[],
+                    resolved_question=resolved_question,
+                    retrieval_debug=trace_debug if request.debug or request.retrieval_only else None,
+                ),
+                trace_debug,
             )
 
-        # 步骤 2: 文档重排与相关性过滤
-        print("步骤 2: 正在使用Reranker进行重排...")
+        # 步骤 2: 先对精确 Chunk 重排，再扩展为完整父页面（Small-to-Big）。
+        print("步骤 2: 正在使用Reranker进行Chunk级重排...")
         page_limit = rerank_page_limit(question, mentioned_companies)
-        reranked_items = rerank_documents(
+        reranked_chunks = measured("rerank", rerank_documents,
             question,
             final_candidates,
             top_n=page_limit,
             required_companies=mentioned_companies,
+            telemetry=telemetry,
         )
-        reranked_items = expand_ranked_to_full_pages(reranked_items)
-        reranked_docs = [item.document for item in reranked_items]
-        print(f"  - 重排后保留 {len(reranked_docs)} 篇文档。")
-        for item in reranked_items:
+        print(f"  - 重排后保留 {len(reranked_chunks)} 个Chunk。")
+        for item in reranked_chunks:
             metadata = item.document.metadata
             print(
                 f"    #{item.rank} score={item.score} {metadata.get('company')} | "
                 f"{metadata.get('source_file')} 第{int(metadata.get('page', 0)) + 1}页"
             )
-        debug_payload = None
-        if request.debug or request.retrieval_only:
-            debug_payload = RetrievalDebug(
-                mentioned_companies=mentioned_companies,
-                dense=[to_debug_item(item) for item in dense_ranked],
-                bm25=[to_debug_item(item) for item in bm25_ranked],
-                fused=[to_debug_item(item) for item in fused_ranked],
-                reranked=[to_debug_item(item) for item in reranked_items],
-                **query_debug_fields,
+        trace_debug = RetrievalDebug(
+            mentioned_companies=mentioned_companies,
+            dense=[to_debug_item(item) for item in dense_ranked],
+            bm25=[to_debug_item(item) for item in bm25_ranked],
+            fused=[to_debug_item(item) for item in fused_ranked],
+            reranked=[to_debug_item(item) for item in reranked_chunks],
+            **query_debug_fields,
+        )
+        debug_payload = trace_debug if request.debug or request.retrieval_only else None
+        if not measured("relevance", is_retrieval_relevant, question, reranked_chunks):
+            telemetry["outcome"] = "insufficient_evidence"
+            return finish(
+                QueryResponse(
+                    success=True,
+                    question=original_question,
+                    answer="未找到与问题相关的信息，无法回答。",
+                    source_documents=[],
+                    resolved_question=resolved_question,
+                    retrieval_debug=debug_payload,
+                ),
+                trace_debug,
             )
-        if not is_retrieval_relevant(question, reranked_items):
-            return QueryResponse(
-                success=True,
-                question=original_question,
-                answer="未找到与问题相关的信息，无法回答。",
-                source_documents=[],
-                resolved_question=resolved_question,
-                retrieval_debug=debug_payload,
-            )
+        reranked_items = measured("parent_expansion", expand_ranked_to_full_pages, reranked_chunks)
+        reranked_docs = [item.document for item in reranked_items]
         if request.retrieval_only:
             answer = "检索完成（retrieval_only=true，未调用生成模型）。"
         else:
             # 步骤 3: 生成答案
             print("步骤 3: 正在调用LLM生成最终答案...")
-            answer = generate_answer(question, reranked_docs)
+            answer = measured("generation", generate_answer, question, reranked_docs, telemetry=telemetry)
             print(f"  - LLM生成答案完成。")
             # 步骤4：验证答案，拦截幻觉
-            answer = validate_answer(answer, reranked_docs, question)
-            upsert_faq(question, answer)
+            if telemetry["llm_status"] == "success":
+                answer = measured("answer_validation", validate_answer, answer, reranked_docs, question)
 
         # 准备返回的源文档信息
-        # 模型使用精确切片生成答案；向用户展示时扩展为完整 PDF 页面。
+        # 模型使用重排后扩展的父页面；引用与生成所用证据保持一致。
         # 同一页命中多个切片时只展示一次，避免重复且便于核对原报告。
         source_documents = []
         seen_source_pages: set[tuple[str, int]] = set()
-        source_context_docs = reranked_docs if should_cache_answer(answer) else []
+        source_context_docs = reranked_docs if is_supported_answer(answer) else []
         for doc in source_context_docs:
             source_file = str(doc.metadata.get("source_file", ""))
             page_index = int(doc.metadata.get("page", 0))
@@ -1127,19 +1091,36 @@ async def rag_query(request: QueryRequest):
             + ", ".join(source.company for source in source_documents)
         )
 
-        return QueryResponse(
-            success=True,
-            question=original_question,
-            answer=answer,
-            source_documents=source_documents,
-            resolved_question=resolved_question,
-            retrieval_debug=debug_payload,
+        return finish(
+            QueryResponse(
+                success=telemetry["llm_status"] in ("not_called", "success"),
+                question=original_question,
+                answer=answer,
+                source_documents=source_documents,
+                resolved_question=resolved_question,
+                retrieval_debug=debug_payload,
+            ),
+            trace_debug,
         )
 
     except Exception as e:
         # 最外层异常 fallback：保证任何未预料的 error 都有响应
-        print(f"处理请求时发生未知错误: {e}")
-        raise HTTPException(status_code=500, detail=f"服务器内部错误: {str(e)}")
+        telemetry["outcome"] = "service_error"
+        telemetry["error_type"] = type(e).__name__
+        trace_debug = RetrievalDebug(
+            mentioned_companies=mentioned_companies,
+            dense=[to_debug_item(item) for item in dense_ranked],
+            bm25=[to_debug_item(item) for item in bm25_ranked],
+            fused=[to_debug_item(item) for item in fused_ranked],
+            reranked=[to_debug_item(item) for item in reranked_chunks],
+            **query_debug_fields,
+        )
+        return finish(QueryResponse(
+            success=False, question=original_question,
+            answer="服务暂时不可用，请稍后重试。", source_documents=[],
+            resolved_question=resolved_question,
+            retrieval_debug=trace_debug if request.debug else None,
+        ), trace_debug)
 
 
 @app.get("/", response_model=HealthResponse)

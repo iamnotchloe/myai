@@ -27,8 +27,8 @@ TERMINAL_PUNCTUATION = "。！？；!?"
 class AdaptiveChunkConfig:
     """token 上限与完整元素重叠预算。"""
 
-    max_tokens: int = 512
-    overlap_tokens: int = 64
+    max_tokens: int = 448
+    overlap_tokens: int = 96
 
     def __post_init__(self) -> None:
         if self.max_tokens <= 0:
